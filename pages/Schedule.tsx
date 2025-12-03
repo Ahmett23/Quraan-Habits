@@ -1,4 +1,3 @@
-
 import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -7,7 +6,7 @@ const Schedule: React.FC = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    navigate('/habits', { replace: true });
+    navigate('/app/habits', { replace: true });
   }, [navigate]);
 
   return null;

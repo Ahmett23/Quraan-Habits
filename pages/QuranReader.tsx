@@ -1,22 +1,37 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { fetchVerses, fetchChapters } from '../services/quranService';
-import { saveUserProgress, getUserProgress } from '../services/storageService';
+import { persistUserProgress, fetchUserProgress } from '../services/storageService';
 import { Ayah, Surah, UserProgress } from '../types';
-import { ArrowLeft, Moon, Sun, Bookmark, Languages } from 'lucide-react';
+import { ArrowLeft, Moon, Sun, Bookmark, ChevronLeft, ChevronRight } from 'lucide-react';
 
 const QuranReader: React.FC = () => {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  
+  // Data State
   const [verses, setVerses] = useState<Ayah[]>([]);
+  const [pagesData, setPagesData] = useState<Record<number, Ayah[]>>({});
+  const [pageNumbers, setPageNumbers] = useState<number[]>([]);
   const [surahInfo, setSurahInfo] = useState<Surah | null>(null);
+  
+  // UI State
   const [loading, setLoading] = useState(true);
   const [isDarkMode, setIsDarkMode] = useState(false);
-  const [showTranslation, setShowTranslation] = useState(false); // Default false for "Kitab" view
-  const [userProgress, setUserProgress] = useState<UserProgress>(getUserProgress());
   
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState<number>(0);
+  
+  // User Data
+  const [userProgress, setUserProgress] = useState<UserProgress>({
+    lastReadSurahId: null,
+    lastReadAyahNumber: null,
+    bookmarks: [],
+    theme: 'light'
+  });
 
+  // Initialization
   useEffect(() => {
     const loadContent = async () => {
       if (!id) return;
@@ -24,196 +39,303 @@ const QuranReader: React.FC = () => {
       
       const chapterId = parseInt(id);
       
+      // 1. Fetch Surah Info
       const chapters = await fetchChapters();
       const currentSurah = chapters.find(c => c.id === chapterId);
       setSurahInfo(currentSurah || null);
 
+      // 2. Fetch Verses
       const fetchedVerses = await fetchVerses(chapterId);
       setVerses(fetchedVerses);
       
-      const progress = getUserProgress();
-      progress.lastReadSurahId = chapterId;
-      saveUserProgress(progress);
-      setUserProgress(progress);
+      // 3. Group by Page (Madani Mushaf Standard)
+      const groupedPages: Record<number, Ayah[]> = {};
+      const pNums: number[] = [];
+      
+      fetchedVerses.forEach(verse => {
+          const p = verse.page_number;
+          if (!groupedPages[p]) {
+              groupedPages[p] = [];
+              pNums.push(p);
+          }
+          groupedPages[p].push(verse);
+      });
+      
+      setPagesData(groupedPages);
+      setPageNumbers(pNums.sort((a, b) => a - b));
 
+      // 4. Load User Progress & Determine Start Page
+      const loadedProgress = await fetchUserProgress();
+      setUserProgress(loadedProgress);
+
+      const queryPage = searchParams.get('page');
+      let startPage = pNums[0];
+
+      if (queryPage) {
+          const qp = parseInt(queryPage);
+          if (pNums.includes(qp)) startPage = qp;
+      } else {
+           if(loadedProgress.lastReadSurahId === chapterId && loadedProgress.lastReadPageNumber && pNums.includes(loadedProgress.lastReadPageNumber)) {
+               startPage = loadedProgress.lastReadPageNumber;
+           }
+      }
+      
+      setCurrentPage(startPage);
       setLoading(false);
     };
 
     loadContent();
   }, [id]);
 
+  // Save Progress on Page Change
   useEffect(() => {
-    // Scroll to hash if present after loading
-    if (!loading && window.location.hash) {
-      const elementId = window.location.hash.substring(1);
-      const element = document.getElementById(elementId);
-      if (element) {
-        setTimeout(() => {
-          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          if (showTranslation) {
-             element.classList.add('ring-2', 'ring-digri-500', 'ring-offset-4');
-             setTimeout(() => element.classList.remove('ring-2', 'ring-digri-500', 'ring-offset-4'), 2000);
-          } else {
-             element.classList.add('bg-digri-100/50');
-             setTimeout(() => element.classList.remove('bg-digri-100/50'), 2000);
-          }
-        }, 500);
+      const saveProgress = async () => {
+        if (currentPage && surahInfo) {
+            // Need to fetch fresh or use current? Use state.
+            // But we need to update state then save.
+            const updatedProgress = { ...userProgress };
+            updatedProgress.lastReadSurahId = surahInfo.id;
+            updatedProgress.lastReadPageNumber = currentPage;
+            
+            setUserProgress(updatedProgress);
+            await persistUserProgress(updatedProgress);
+        }
+      };
+      
+      if (!loading && surahInfo) {
+          saveProgress();
       }
-    }
-  }, [loading, showTranslation]);
+  }, [currentPage, surahInfo, loading]); // Added logic to prevent save on initial load before progress loaded
 
   const toggleMode = () => setIsDarkMode(!isDarkMode);
 
-  const handleToggleBookmark = (ayah: Ayah, index: number) => {
-    if (!surahInfo) return;
-
-    const newProgress = { ...userProgress };
-    const bookmarkIndex = newProgress.bookmarks.findIndex(b => b.verse_key === ayah.verse_key);
-
-    if (bookmarkIndex > -1) {
-      // Remove
-      newProgress.bookmarks.splice(bookmarkIndex, 1);
-    } else {
-      // Add
-      newProgress.bookmarks.push({
-        verse_key: ayah.verse_key,
-        surah_id: surahInfo.id,
-        surah_name: surahInfo.name_simple,
-        ayah_number: index + 1,
-        text_uthmani: ayah.text_uthmani,
-        timestamp: Date.now()
-      });
-    }
-
-    setUserProgress(newProgress);
-    saveUserProgress(newProgress);
+  // --- Navigation Helpers ---
+  const goToNextPage = () => {
+      const idx = pageNumbers.indexOf(currentPage);
+      if (idx < pageNumbers.length - 1) {
+          setCurrentPage(pageNumbers[idx + 1]);
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
   };
 
-  const isBookmarked = (verseKey: string) => {
-    return userProgress.bookmarks.some(b => b.verse_key === verseKey);
+  const goToPrevPage = () => {
+      const idx = pageNumbers.indexOf(currentPage);
+      if (idx > 0) {
+          setCurrentPage(pageNumbers[idx - 1]);
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
   };
+
+  // --- Bookmarking Logic ---
+  const togglePageBookmark = async () => {
+      if (!surahInfo || !currentPage) return;
+      
+      const pageVerses = pagesData[currentPage];
+      if (!pageVerses || pageVerses.length === 0) return;
+
+      const firstVerse = pageVerses[0];
+      const newProgress = { ...userProgress };
+      const existingIdx = newProgress.bookmarks.findIndex(b => b.page_number === currentPage && b.surah_id === surahInfo.id);
+
+      if (existingIdx > -1) {
+          newProgress.bookmarks.splice(existingIdx, 1);
+      } else {
+          newProgress.bookmarks.push({
+              verse_key: firstVerse.verse_key,
+              surah_id: surahInfo.id,
+              surah_name: surahInfo.name_simple,
+              ayah_number: firstVerse.id,
+              text_uthmani: firstVerse.text_uthmani.substring(0, 50) + '...',
+              page_number: currentPage,
+              timestamp: Date.now()
+          });
+      }
+      setUserProgress(newProgress);
+      await persistUserProgress(newProgress);
+  };
+
+  const isPageBookmarked = () => {
+      return userProgress.bookmarks.some(b => b.page_number === currentPage && b.surah_id === surahInfo?.id);
+  };
+
+  // --- Keyboard Support ---
+  useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+          if (e.key === 'ArrowLeft') goToNextPage();
+          if (e.key === 'ArrowRight') goToPrevPage();
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentPage, pageNumbers]);
+
+
+  // --- Renderers ---
+
+  const renderSinglePage = (pageNum: number) => {
+      const pageVerses = pagesData[pageNum];
+      if (!pageVerses) return null;
+      
+      const BISMILLAH = "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ";
+
+      return (
+          <div className={`relative w-full max-w-4xl mx-auto flex flex-col min-h-[70vh] transition-all duration-300 ${isDarkMode ? 'text-slate-200' : 'text-slate-900'}`}>
+              
+              <div className="flex-1 px-4 py-8 sm:px-6 flex flex-col relative z-0">
+                  {/* Content: Justified Arabic Text */}
+                  <div className="flex-1 text-center">
+                     <div 
+                        className={`w-full font-arabic text-justify text-[28px] md:text-[36px] leading-[2.1] md:leading-[2.4]`}
+                        dir="rtl"
+                        style={{ textAlignLast: 'center' }}
+                     >
+                         {pageVerses.map((ayah, i) => {
+                             const isSurahStart = ayah.verse_key.endsWith(':1');
+                             const surahId = parseInt(ayah.verse_key.split(':')[0]);
+                             // Show Bismillah if start of surah, unless Fatiha(1) or Tawbah(9)
+                             const showBismillah = isSurahStart && surahId !== 1 && surahId !== 9;
+
+                             return (
+                                 <React.Fragment key={ayah.id}>
+                                     {showBismillah && (
+                                        <div className="w-full text-center my-10 select-none">
+                                            <span className={`font-arabic text-3xl opacity-80 block ${isDarkMode ? 'text-digri-400' : 'text-digri-600'}`}>
+                                                {BISMILLAH}
+                                            </span>
+                                        </div>
+                                     )}
+                                     <span className="hover:text-digri-600 transition-colors cursor-pointer">{ayah.text_uthmani}</span>
+                                     <span className={`inline-flex items-center justify-center w-[30px] h-[30px] mx-1.5 align-middle select-none font-sans text-[12px] font-bold border rounded-full opacity-60 ${isDarkMode ? 'border-slate-700 text-slate-500 bg-slate-800' : 'border-slate-200 text-slate-400 bg-slate-50'}`}>
+                                         {ayah.verse_key.split(':')[1]}
+                                     </span>
+                                 </React.Fragment>
+                             );
+                         })}
+                     </div>
+                  </div>
+
+                  {/* Footer: Page Number */}
+                  <div className="mt-12 text-center">
+                      <span className={`text-xs font-bold px-3 py-1 rounded-full ${isDarkMode ? 'bg-slate-800 text-slate-500' : 'bg-slate-100 text-slate-400'}`}>
+                        {pageNum}
+                      </span>
+                  </div>
+              </div>
+          </div>
+      );
+  };
+
 
   if (loading) return (
-    <div className="h-screen flex items-center justify-center bg-slate-50 text-digri-600">
+    <div className="h-screen flex items-center justify-center bg-white text-digri-600">
       <div className="animate-pulse flex flex-col items-center">
         <div className="h-12 w-12 border-4 border-digri-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-        <p className="font-medium">Opening Quran...</p>
+        <p className="font-medium">Opening Book...</p>
       </div>
     </div>
   );
 
   return (
-    <div className={`min-h-screen transition-colors duration-500 ${isDarkMode ? 'bg-[#121212] text-slate-100' : 'bg-[#fffcf7] text-slate-900'}`}>
+    <div className={`min-h-screen flex flex-col transition-colors duration-500 ${isDarkMode ? 'bg-[#0f0f0f]' : 'bg-white'}`}>
       
-      {/* Floating Header */}
-      <div className={`fixed top-0 left-0 right-0 z-40 px-4 py-4 transition-all duration-300 ${isDarkMode ? 'bg-[#121212]/90 border-b border-slate-800' : 'bg-[#fffcf7]/90 border-b border-stone-100'} backdrop-blur-md`}>
-         <div className="max-w-3xl mx-auto flex items-center justify-between">
-            <button onClick={() => navigate('/')} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-stone-100 text-slate-600 hover:text-digri-600'}`}>
-              <ArrowLeft size={22} />
+      {/* Top Bar */}
+      <div className={`fixed top-0 left-0 right-0 z-40 px-4 py-3 transition-all duration-300 ${isDarkMode ? 'bg-[#0f0f0f]/90 border-b border-slate-800' : 'bg-white/90 border-b border-slate-50'} backdrop-blur-xl`}>
+         <div className="max-w-7xl mx-auto flex items-center justify-between">
+            <button onClick={() => navigate('/app')} className={`flex items-center gap-2 px-3 py-2 rounded-full transition-colors ${isDarkMode ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-50 text-slate-600 hover:text-digri-600'}`}>
+              <ArrowLeft size={20} />
+              <span className="hidden sm:inline font-bold text-sm">Library</span>
             </button>
             
-            <div className="text-center">
-              <h2 className="font-bold text-lg leading-tight">{surahInfo?.name_simple}</h2>
-              <p className={`text-[10px] uppercase tracking-widest font-bold ${isDarkMode ? 'text-slate-500' : 'text-stone-400'}`}>{surahInfo?.translated_name.name}</p>
+            <div className="flex flex-col items-center">
+                <span className={`font-bold text-sm ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{surahInfo?.name_simple}</span>
             </div>
             
             <div className="flex gap-2">
                 <button 
-                  onClick={() => setShowTranslation(!showTranslation)} 
-                  className={`p-2 rounded-full transition-colors ${showTranslation ? 'bg-digri-500 text-white shadow-lg shadow-digri-500/30' : isDarkMode ? 'text-slate-400 hover:bg-slate-800' : 'text-stone-400 hover:bg-stone-100'}`}
-                  title="Toggle Translation"
+                  onClick={togglePageBookmark}
+                  className={`p-2 rounded-full transition-colors ${isPageBookmarked() ? 'text-digri-500 bg-digri-50' : isDarkMode ? 'text-slate-400 hover:bg-slate-800' : 'text-slate-400 hover:bg-slate-100'}`}
+                  title="Bookmark Page"
                 >
-                  <Languages size={20} />
+                  <Bookmark size={20} fill={isPageBookmarked() ? "currentColor" : "none"} />
                 </button>
-                <button onClick={toggleMode} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'hover:bg-slate-800 text-amber-400' : 'hover:bg-stone-100 text-slate-400 hover:text-digri-500'}`}>
+                <button onClick={toggleMode} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'hover:bg-slate-800 text-amber-400' : 'hover:bg-slate-100 text-slate-400 hover:text-digri-500'}`}>
                   {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
                 </button>
             </div>
          </div>
       </div>
 
-      <div ref={containerRef} className="pt-28 pb-24 px-3 md:px-6 max-w-3xl mx-auto">
-        
-        {surahInfo?.id !== 1 && surahInfo?.id !== 9 && (
-          <div className="text-center mb-8 mt-4 font-arabic text-3xl opacity-80 select-none">
-            بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ
-          </div>
-        )}
-
-        {showTranslation ? (
-          // --- List View with Translations ---
-          <div className="space-y-6">
-            {verses.map((ayah, index) => {
-              const bookmarked = isBookmarked(ayah.verse_key);
-              return (
-                <div 
-                    key={ayah.id} 
-                    id={ayah.verse_key}
-                    className={`p-5 rounded-3xl transition-all duration-300 ${isDarkMode ? 'bg-slate-800/50 hover:bg-slate-800' : 'bg-white hover:bg-white shadow-sm hover:shadow-md border border-slate-50'} ${bookmarked ? isDarkMode ? 'ring-1 ring-digri-500/50' : 'ring-1 ring-digri-200 shadow-digri-100' : ''}`}
-                >
-                    <div className="flex justify-between items-center mb-6">
-                    <span className={`text-xs font-bold px-3 py-1 rounded-full ${isDarkMode ? 'bg-slate-700 text-slate-400' : 'bg-slate-100 text-slate-500'}`}>
-                        {surahInfo?.id}:{index + 1}
-                    </span>
-                    <button 
-                        onClick={(e) => { e.stopPropagation(); handleToggleBookmark(ayah, index); }}
-                        className={`transition-all active:scale-90 p-2 rounded-full ${bookmarked ? 'text-digri-500' : 'text-slate-300 hover:text-digri-400 hover:bg-slate-50'}`}
-                    >
-                        <Bookmark size={20} fill={bookmarked ? "currentColor" : "none"} />
-                    </button>
-                    </div>
-
-                    <p className="text-right font-arabic text-4xl leading-[2.4] mb-6" dir="rtl">
-                    {ayah.text_uthmani}
-                    </p>
-
-                    <p className={`text-lg leading-relaxed font-serif ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
-                    {ayah.translations?.[0]?.text?.replace(/<sup.*?<\/sup>/g, '') || 'Translation not available'}
-                    </p>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          // --- Mushaf Page View (Continuous Text) ---
-          <div className={`p-6 md:p-10 rounded-2xl md:rounded-3xl shadow-sm border transition-colors duration-500 ${isDarkMode ? 'bg-[#1a1a1a] border-slate-800' : 'bg-white border-[#f0e6d2]'} `}>
-            <div 
-                className={`font-arabic text-[26px] md:text-[34px] leading-[2.2] md:leading-[2.1] text-justify ${isDarkMode ? 'text-[#e0e0e0]' : 'text-[#2d2d2d]'}`} 
-                dir="rtl"
-                style={{ textAlignLast: 'center' }}
+      {/* Main Reading Area */}
+      <div className="flex-1 pt-20 pb-24 px-0 sm:px-8 flex items-center justify-center min-h-[calc(100vh-80px)]">
+         
+         <div className="w-full max-w-7xl flex items-center justify-center gap-4 lg:gap-8">
+            
+            {/* Prev Button (Visually Left, logically Next Page because RTL Book) */}
+            <button 
+                onClick={goToNextPage}
+                disabled={pageNumbers.indexOf(currentPage) >= pageNumbers.length - 1}
+                className={`hidden md:flex p-4 rounded-full transition-all disabled:opacity-20 disabled:cursor-not-allowed ${isDarkMode ? 'bg-slate-800 text-white hover:bg-digri-600' : 'bg-slate-50 text-slate-400 hover:bg-digri-600 hover:text-white'}`}
             >
-               {verses.map((ayah, index) => {
-                  const bookmarked = isBookmarked(ayah.verse_key);
-                  return (
-                    <React.Fragment key={ayah.id}>
-                      <span 
-                          id={ayah.verse_key}
-                          onClick={() => handleToggleBookmark(ayah, index)}
-                          className={`cursor-pointer hover:text-digri-600 transition-colors duration-200 decoration-digri-300 decoration-2 ${bookmarked ? 'text-digri-600 bg-digri-50/10 rounded px-1' : ''}`}
-                      >
-                         {ayah.text_uthmani}
-                      </span>
-                      {/* Inline Ayah Marker */}
-                      <span className={`inline-flex items-center justify-center w-[30px] h-[30px] mx-1.5 align-middle select-none font-sans text-[10px] font-bold border rounded-full relative top-1 ${isDarkMode ? 'border-slate-600 text-slate-500' : 'border-slate-300 text-slate-400'}`}>
-                         {index + 1}
-                      </span>
-                    </React.Fragment>
-                  );
-               })}
+                <ChevronLeft size={32} />
+            </button>
+
+            {/* Book Layout */}
+            <div className="flex-1 flex justify-center w-full">
+                {/* Desktop: Double Page View (If screen wide enough) */}
+                <div className="hidden xl:flex gap-16 w-full justify-center">
+                     {/* Left Page (Even Number) */}
+                     {pageNumbers.includes(currentPage + 1) ? (
+                        <div className="flex-1 border-l border-slate-100 pl-16">
+                            {renderSinglePage(currentPage + 1)}
+                        </div>
+                     ) : <div className="flex-1"></div>}
+                     
+                     {/* Right Page (Current/Odd) */}
+                     <div className="flex-1">
+                        {renderSinglePage(currentPage)}
+                     </div>
+                </div>
+
+                {/* Mobile/Tablet: Single Page View */}
+                <div className="xl:hidden w-full">
+                    {renderSinglePage(currentPage)}
+                </div>
             </div>
-          </div>
-        )}
 
-        <div className="mt-20 text-center">
-          <button 
-            onClick={() => navigate('/')}
-            className="px-8 py-4 bg-digri-600 text-white rounded-full font-bold shadow-xl shadow-digri-500/30 hover:bg-digri-500 transition-all active:scale-95"
-          >
-            Finish Reading
-          </button>
-        </div>
+            {/* Next Button (Visually Right, logically Prev Page) */}
+             <button 
+                onClick={goToPrevPage}
+                disabled={pageNumbers.indexOf(currentPage) <= 0}
+                className={`hidden md:flex p-4 rounded-full transition-all disabled:opacity-20 disabled:cursor-not-allowed ${isDarkMode ? 'bg-slate-800 text-white hover:bg-digri-600' : 'bg-slate-50 text-slate-400 hover:bg-digri-600 hover:text-white'}`}
+            >
+                <ChevronRight size={32} />
+            </button>
 
+         </div>
       </div>
+
+      {/* Mobile Controls Bottom */}
+      <div className={`md:hidden fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-6 px-6 py-3 rounded-full shadow-2xl border z-50 ${isDarkMode ? 'bg-slate-800 border-slate-700 shadow-black/50' : 'bg-white/90 backdrop-blur-md border-slate-100 shadow-slate-200/50'}`}>
+          <button 
+            onClick={goToNextPage} 
+            disabled={pageNumbers.indexOf(currentPage) >= pageNumbers.length - 1}
+            className={`p-2 rounded-full ${isDarkMode ? 'text-slate-300' : 'text-slate-400'}`}
+          >
+              <ChevronLeft size={24} />
+          </button>
+          
+          <span className={`text-sm font-bold ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+              Page {currentPage}
+          </span>
+
+          <button 
+            onClick={goToPrevPage}
+            disabled={pageNumbers.indexOf(currentPage) <= 0}
+            className={`p-2 rounded-full ${isDarkMode ? 'text-slate-300' : 'text-slate-400'}`}
+          >
+              <ChevronRight size={24} />
+          </button>
+      </div>
+
     </div>
   );
 };

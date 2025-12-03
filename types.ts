@@ -17,6 +17,7 @@ export interface Ayah {
   id: number;
   verse_key: string;
   text_uthmani: string;
+  page_number: number; // Added for Book View
   translations: {
     resource_id: number;
     text: string;
@@ -75,12 +76,14 @@ export interface Bookmark {
   surah_name: string;
   ayah_number: number;
   text_uthmani: string;
+  page_number?: number;
   timestamp: number;
 }
 
 export interface UserProgress {
   lastReadSurahId: number | null;
   lastReadAyahNumber: number | null;
+  lastReadPageNumber?: number | null;
   bookmarks: Bookmark[]; // Changed from string[] to Bookmark object
   theme: 'light' | 'dark';
 }
@@ -94,4 +97,17 @@ export interface Habit {
   targetDays: number[];
   streak: number;
   color: string;
+}
+
+// --- Auth Types ---
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  joinedAt: number;
+}
+
+export interface AuthResponse {
+  user: User;
+  token: string;
 }

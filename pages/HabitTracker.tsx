@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { getChallenges, saveChallenges } from '../services/storageService';
+import { fetchChallenges, persistChallenges } from '../services/storageService';
 import { fetchChapters } from '../services/quranService';
 import { Challenge, ChallengeType, Surah } from '../types';
 import { TOTAL_QURAN_PAGES } from '../constants';
@@ -11,6 +11,7 @@ const HabitTracker: React.FC = () => {
   // --- STATE ---
   const [challenges, setChallenges] = useState<Challenge[]>([]);
   const [chapters, setChapters] = useState<Surah[]>([]);
+  const [loading, setLoading] = useState(true);
   
   // Navigation State
   const [view, setView] = useState<'list' | 'create' | 'detail'>('list');
@@ -34,10 +35,24 @@ const HabitTracker: React.FC = () => {
   // Detail View State
   const [progressInput, setProgressInput] = useState<number>(0);
   const currentDayRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
-    setChallenges(getChallenges());
-    fetchChapters().then(setChapters);
+    const loadData = async () => {
+        try {
+            const [fetchedChallenges, fetchedChapters] = await Promise.all([
+                fetchChallenges(),
+                fetchChapters()
+            ]);
+            setChallenges(fetchedChallenges || []);
+            setChapters(fetchedChapters || []);
+        } catch (e) {
+            console.error("Failed to load data", e);
+        } finally {
+            setLoading(false);
+        }
+    };
+    loadData();
   }, []);
 
   // Auto-scroll to current day when detail view opens
@@ -74,7 +89,7 @@ const HabitTracker: React.FC = () => {
 
   const updateChallenges = (newChallenges: Challenge[]) => {
     setChallenges(newChallenges);
-    saveChallenges(newChallenges);
+    persistChallenges(newChallenges);
   };
 
   const calculateQuranDailyTarget = (c: Challenge) => {
@@ -668,7 +683,12 @@ const HabitTracker: React.FC = () => {
 
             {/* List */}
             <div className="px-4 -mt-4 relative z-20 space-y-4">
-                {filteredChallenges.length === 0 ? (
+                {loading ? (
+                     <div className="text-center py-20">
+                        <div className="w-10 h-10 border-4 border-digri-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                        <p className="text-slate-400 text-sm">Loading goals...</p>
+                    </div>
+                ) : filteredChallenges.length === 0 ? (
                     <div className="text-center py-20 bg-white rounded-3xl shadow-sm border border-slate-100 mx-2">
                         <div className={`w-20 h-20 bg-digri-50 rounded-full flex items-center justify-center mx-auto mb-4 text-digri-200`}>
                              <ActiveIcon size={32} />
